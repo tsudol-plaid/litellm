@@ -16,6 +16,7 @@ from litellm.constants import INTERNAL_CALL_ORIGIN_METADATA_KEY
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
+from litellm.router_api import RoutingContext
 from litellm.router_strategy.complexity_router.complexity_router import ComplexityRouter
 from litellm.router_strategy.complexity_router.config import ComplexityRouterConfig, JevClassifierConfig
 from litellm.router_strategy.complexity_router.jev_classifier import (
@@ -82,7 +83,7 @@ async def test_jev_logging_failure_preserves_verdict_and_keeps_circuit_closed(
     handler.client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     router: Final = ComplexityRouter(
         "jev-logging-failure",
-        litellm.Router(model_list=[]),
+        RoutingContext(litellm.Router(model_list=[])),
         {"classifier_type": "jev", "jev_classifier_config": {}, "tiers": {"SIMPLE": "cheap"}},
         jev_client=HttpJevClassifierClient("test", "https://typesafe.test", handler),
         derive_savings_baseline=False,
@@ -198,7 +199,7 @@ async def test_jev_accounts_once_with_parent_identity_even_when_the_verdict_fail
     provider: Final = HttpJevClassifierClient("test", "https://typesafe.test", handler)
     router: Final = ComplexityRouter(
         "jev-router",
-        litellm.Router(model_list=[]),
+        RoutingContext(litellm.Router(model_list=[])),
         {
             "classifier_type": "jev" if legacy else "oss_classifier",
             "jev_classifier_config" if legacy else "opensource_classifier_config": {
@@ -280,7 +281,7 @@ async def test_jev_uses_bounded_history_and_separates_operator_instructions(incl
     handler.client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     router: Final = ComplexityRouter(
         "jev-context",
-        litellm.Router(model_list=[]),
+        RoutingContext(litellm.Router(model_list=[])),
         {
             "classifier_type": "jev",
             "jev_classifier_config": {"instructions": "operator-only rubric"},
@@ -344,7 +345,7 @@ async def test_jev_encrypted_task_skips_provider_without_disabling_plaintext_cla
     handler.client = httpx.AsyncClient(transport=transport)
     router: Final = ComplexityRouter(
         "jev-encrypted",
-        litellm.Router(model_list=[]),
+        RoutingContext(litellm.Router(model_list=[])),
         {
             "classifier_type": "jev",
             "jev_classifier_config": {},
@@ -412,7 +413,7 @@ async def test_jev_cancellation_propagates_without_opening_timeout_breaker() -> 
     handler.client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     router: Final = ComplexityRouter(
         "jev-cancellation",
-        litellm.Router(model_list=[]),
+        RoutingContext(litellm.Router(model_list=[])),
         {"classifier_type": "jev", "jev_classifier_config": {}, "tiers": {"SIMPLE": "cheap"}},
         jev_client=HttpJevClassifierClient("test", "https://typesafe.test", handler),
         derive_savings_baseline=False,
@@ -521,7 +522,7 @@ async def test_oss_routes_with_its_own_credentials_and_accounts_the_checkpoint(
     monkeypatch.setattr(litellm, "_async_success_callback", [recorder])
     router: Final = ComplexityRouter(
         f"{provider}-route",
-        litellm.Router(model_list=[]),
+        RoutingContext(litellm.Router(model_list=[])),
         {
             "classifier_type": "jev" if legacy else "oss_classifier",
             "jev_classifier_config" if legacy else "opensource_classifier_config": {
@@ -588,7 +589,7 @@ async def test_databricks_routes_through_the_serving_endpoint_and_accounts_the_e
     monkeypatch.setattr(litellm, "_async_success_callback", [recorder])
     router: Final = ComplexityRouter(
         "databricks-route",
-        litellm.Router(model_list=[]),
+        RoutingContext(litellm.Router(model_list=[])),
         {
             "classifier_type": "jev" if legacy else "oss_classifier",
             "jev_classifier_config" if legacy else "opensource_classifier_config": {
@@ -645,7 +646,7 @@ async def test_databricks_routes_through_ai_decide_without_a_model_field_and_acc
     monkeypatch.setattr(litellm, "_async_success_callback", [recorder])
     router: Final = ComplexityRouter(
         "databricks-route",
-        litellm.Router(model_list=[]),
+        RoutingContext(litellm.Router(model_list=[])),
         {
             "classifier_type": "jev" if legacy else "oss_classifier",
             "jev_classifier_config" if legacy else "opensource_classifier_config": {
@@ -685,7 +686,7 @@ def test_databricks_without_a_base_or_key_fails_at_client_build(monkeypatch: pyt
     with pytest.raises(ValueError, match="DATABRICKS_API_BASE"):
         ComplexityRouter(
             "databricks-route",
-            litellm.Router(model_list=[]),
+            RoutingContext(litellm.Router(model_list=[])),
             {
                 "classifier_type": "oss_classifier",
                 "opensource_classifier_config": {"provider": "databricks", "model": "ai_decide"},
