@@ -1,13 +1,9 @@
 """
 Tests for encrypted_content_affinity pre-call check.
 
-The mechanism works without any cache and supports two encoding strategies:
-
-1. **Items with IDs**: item IDs for output items with `encrypted_content` are rewritten to
-   `encitem_{base64("litellm:model_id:{model_id};item_id:{original_id}")}`.
-
-2. **Items without IDs** (Codex): encrypted_content itself is wrapped with model_id metadata:
-   `litellm_enc:{base64("model_id:{model_id}")};{original_encrypted_content}`.
+The mechanism preserves output item IDs and wraps encrypted_content with model_id metadata:
+`litellm_enc:{base64("model_id:{model_id}")};{original_encrypted_content}`.
+Previously emitted `encitem_` IDs remain supported on input.
 
 - On routing: `EncryptedContentAffinityCheck` decodes from either item IDs or wrapped
   encrypted_content to extract `model_id` and pins the request to that deployment.
@@ -68,20 +64,15 @@ def _build_mock_response(output_items, response_id="resp_mock-123"):
     )
 
 
-def _get_item_id(item) -> str:
-    """Extract item ID from either a Pydantic model or a dict."""
-    if isinstance(item, dict):
-        return item.get("id", "")
-    return getattr(item, "id", "") or ""
-
-
-def _extract_encoded_item_id(response) -> str:
-    """Return the first ``encitem_``-prefixed item ID from the response output."""
+def _extract_encrypted_item(response: ResponsesAPIResponse) -> dict[str, str]:
     for item in response.output or []:
-        item_id = _get_item_id(item)
-        if item_id.startswith("encitem_"):
-            return item_id
-    return ""
+        item_id: Final = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
+        content: Final = (
+            item.get("encrypted_content") if isinstance(item, dict) else getattr(item, "encrypted_content", None)
+        )
+        if isinstance(item_id, str) and isinstance(content, str) and content:
+            return {"id": item_id, "encrypted_content": content}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +119,7 @@ class TestEncryptedItemIdCodec:
 
 
 class TestUpdateEncryptedContentItemIds:
-    def test_rewrites_encrypted_items_in_dict_response(self):
+    def test_preserves_encrypted_item_ids_in_dict_response(self) -> None:
         model_id = "deployment-1"
         response = {
             "id": "resp_123",
@@ -140,12 +131,10 @@ class TestUpdateEncryptedContentItemIds:
         result = ResponsesAPIRequestUtils._update_encrypted_content_item_ids_in_response(response, model_id)
         # Plain message item untouched
         assert result["output"][0]["id"] == "msg_abc"
-        # Reasoning item with encrypted_content gets encoded
-        encoded_id = result["output"][1]["id"]
-        assert encoded_id.startswith("encitem_")
-        decoded = ResponsesAPIRequestUtils.decode_encrypted_item_id(encoded_id)
-        assert decoded["model_id"] == model_id
-        assert decoded["item_id"] == "rs_xyz"
+        assert result["output"][1]["id"] == "rs_xyz"
+        assert ResponsesAPIRequestUtils.unwrap_encrypted_content_with_model_id(
+            result["output"][1]["encrypted_content"]
+        ) == (model_id, "secret")
 
     def test_no_op_when_model_id_is_none(self):
         response = {"output": [{"id": "rs_xyz", "type": "reasoning", "encrypted_content": "secret"}]}
@@ -249,13 +238,13 @@ class TestRestoreEncryptedContentItemIds:
 @pytest.mark.asyncio
 async def test_encrypted_content_affinity_tracks_and_routes():
     """
-    The first response rewrites encrypted-content item IDs to encoded form.
-    The follow-up request with those encoded IDs is pinned to the same deployment.
+    The first response wraps encrypted content with the deployment's model_id.
+    The follow-up request replaying that content is pinned to the same deployment.
 
     Mocks ``async_response_api_handler`` (the method that makes the HTTP call)
     so the test is deterministic regardless of the HTTP transport in use.
     The ``@client`` decorator and ``_update_responses_api_response_id_with_model_id``
-    post-processing still run, so item-ID rewriting is exercised end-to-end.
+    post-processing still run, so content wrapping is exercised end-to-end.
     """
     mock_resp = _build_mock_response(
         output_items=[
@@ -324,27 +313,19 @@ async def test_encrypted_content_affinity_tracks_and_routes():
         first_model_id = first_response._hidden_params["model_id"]
         selected_deployments.append(first_model_id)
 
-        # The response must have rewritten the encrypted item's ID to encoded form
-        encoded_item_id = _extract_encoded_item_id(first_response)
-        assert encoded_item_id.startswith("encitem_"), (
-            f"Expected output item ID to be rewritten to encitem_... but got {encoded_item_id!r}"
-        )
+        replayed_item: Final = _extract_encrypted_item(first_response)
+        assert replayed_item["id"] == "rs_encrypted_item_456"
+        assert ResponsesAPIRequestUtils.unwrap_encrypted_content_with_model_id(
+            replayed_item["encrypted_content"]
+        ) == (first_model_id, "gAAAAABpnW_yEYmSNEyOG...")
 
-        # Verify the encoded ID decodes back to the correct deployment + original ID
-        decoded = ResponsesAPIRequestUtils.decode_encrypted_item_id(encoded_item_id)
-        assert decoded is not None
-        assert decoded["model_id"] == first_model_id
-        assert decoded["item_id"] == "rs_encrypted_item_456"
-
-        # Second request: use the encoded item IDs from the first response
         second_response = await router.aresponses(
             model="openai.gpt-5.1-codex",
             input=[
                 {"type": "message", "id": "msg_abc123", "role": "assistant"},
                 {
                     "type": "reasoning",
-                    "id": encoded_item_id,
-                    "encrypted_content": "gAAAAABpnW_yEYmSNEyOG...",
+                    **replayed_item,
                 },
             ],
         )
@@ -455,18 +436,16 @@ async def test_encrypted_content_affinity_bypasses_rpm_limits():
         first_model_id = first_response._hidden_params["model_id"]
         selected_deployments.append(first_model_id)
 
-        # Extract encoded item ID from the first response output
-        encoded_item_id = _extract_encoded_item_id(first_response)
-        assert encoded_item_id.startswith("encitem_"), f"Expected encitem_... but got {encoded_item_id!r}"
+        replayed_item: Final = _extract_encrypted_item(first_response)
+        assert replayed_item["id"] == "rs_encrypted_must_pin"
+        assert replayed_item["encrypted_content"].startswith("litellm_enc:")
 
-        # Follow-up with the encoded item ID — should pin to same deployment
         second_response = await router.aresponses(
             model="openai.gpt-5.1-codex",
             input=[
                 {
                     "type": "reasoning",
-                    "id": encoded_item_id,
-                    "encrypted_content": "gAAAAABpnW_yEYmSNEyOG...",
+                    **replayed_item,
                 },
             ],
         )
@@ -864,8 +843,9 @@ async def test_affinity_falls_back_to_same_encryption_boundary_on_model_group_sw
         r1 = await router.aresponses(model="gpt-5.3-codex", input="hi")
 
     assert r1._hidden_params["model_id"] == "gpt-5.3-codex-account-a"
-    encoded_id = _extract_encoded_item_id(r1)
-    assert encoded_id.startswith("encitem_")
+    replayed_item: Final = _extract_encrypted_item(r1)
+    assert replayed_item["id"] == "rs_encrypted_xyz"
+    assert replayed_item["encrypted_content"].startswith("litellm_enc:")
 
     # simple_shuffle.random.choice NOT patched: prove affinity narrows the
     # candidate pool to a single deployment regardless of which one shuffle picks.
@@ -879,8 +859,7 @@ async def test_affinity_falls_back_to_same_encryption_boundary_on_model_group_sw
             input=[
                 {
                     "type": "reasoning",
-                    "id": encoded_id,
-                    "encrypted_content": "gAAAAABpnW_yEYmSNEyOG...",
+                    **replayed_item,
                 },
             ],
         )
@@ -991,8 +970,9 @@ async def test_affinity_falls_back_to_same_boundary_on_alias_switch():
     ):
         r1 = await router.aresponses(model="gpt-5.3-codex", input="hi")
 
-    encoded_id = _extract_encoded_item_id(r1)
-    assert encoded_id.startswith("encitem_")
+    replayed_item: Final = _extract_encrypted_item(r1)
+    assert replayed_item["id"] == "rs_alias_xyz"
+    assert replayed_item["encrypted_content"].startswith("litellm_enc:")
 
     with patch(
         "litellm.llms.custom_httpx.llm_http_handler.BaseLLMHTTPHandler.async_response_api_handler",
@@ -1004,8 +984,7 @@ async def test_affinity_falls_back_to_same_boundary_on_alias_switch():
             input=[
                 {
                     "type": "reasoning",
-                    "id": encoded_id,
-                    "encrypted_content": "gAAAAABpnW_yEYmSNEyOG...",
+                    **replayed_item,
                 },
             ],
         )

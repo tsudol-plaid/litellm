@@ -574,14 +574,7 @@ class ResponsesAPIRequestUtils:
         response: Union["ResponsesAPIResponse", dict[str, object]],
         model_id: str | None,
     ) -> Union["ResponsesAPIResponse", dict[str, object]]:
-        """Rewrite item IDs for output items that contain ``encrypted_content``.
-
-        Encodes ``model_id`` into the item ID so that follow-up requests can be
-        routed back to the originating deployment without any cache lookup.
-
-        For items without an ID (e.g., from Codex), encodes model_id directly
-        into the encrypted_content itself.
-        """
+        """Wrap encrypted content for affinity while preserving streamed item IDs."""
         if not model_id:
             return response
 
@@ -596,35 +589,22 @@ class ResponsesAPIRequestUtils:
 
         for item in output:
             if isinstance(item, dict):
-                item_id = item.get("id")
                 encrypted_content = item.get("encrypted_content")
 
                 if encrypted_content and isinstance(encrypted_content, str):
-                    # Always wrap encrypted_content with model_id for redundancy
                     item["encrypted_content"] = ResponsesAPIRequestUtils.wrap_encrypted_content_with_model_id(
                         encrypted_content, model_id
                     )
-                    # Also encode the ID if present
-                    if item_id and isinstance(item_id, str):
-                        item["id"] = ResponsesAPIRequestUtils._build_encrypted_item_id(model_id, item_id)
             else:
-                item_id = getattr(item, "id", None)
                 encrypted_content = getattr(item, "encrypted_content", None)
 
                 if encrypted_content and isinstance(encrypted_content, str):
-                    # Always wrap encrypted_content with model_id for redundancy
                     try:
                         item.encrypted_content = ResponsesAPIRequestUtils.wrap_encrypted_content_with_model_id(
                             encrypted_content, model_id
                         )
                     except AttributeError:
                         pass
-                    # Also encode the ID if present
-                    if item_id and isinstance(item_id, str):
-                        try:
-                            item.id = ResponsesAPIRequestUtils._build_encrypted_item_id(model_id, item_id)
-                        except AttributeError:
-                            pass
 
         return response
 

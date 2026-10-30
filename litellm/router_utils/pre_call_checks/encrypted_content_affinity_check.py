@@ -8,11 +8,9 @@ different deployment (different org), OpenAI rejects it with an `invalid_encrypt
 error because the organization_id doesn't match.
 
 This callback solves the problem by encoding the originating deployment's ``model_id``
-into the response output items that carry ``encrypted_content``. Two encoding strategies:
-
-1. **Items with IDs**: Encode model_id into the item ID itself (e.g., ``encitem_...``)
-2. **Items without IDs** (Codex): Wrap the encrypted_content with model_id metadata
-   (e.g., ``litellm_enc:{base64_metadata};{original_encrypted_content}``)
+into ``encrypted_content`` using ``litellm_enc:{base64_metadata};{original_encrypted_content}``.
+Item IDs stay consistent across streamed events and complete responses. Legacy ``encitem_...``
+IDs remain supported on input, but new item-only references need the wrapped content for affinity.
 
 The encoded model_id is decoded on the next request so the router can pin to the correct
 deployment without any cache lookup.
@@ -67,7 +65,7 @@ class EncryptedContentAffinityCheck(CustomLogger):
     Routes follow-up Responses API requests to the deployment that produced
     the encrypted output items they reference.
 
-    The ``model_id`` is decoded directly from the litellm-encoded item IDs –
+    The ``model_id`` is decoded from wrapped content or legacy encoded item IDs,
     no caching or TTL management needed.
 
     Wired via ``Router(optional_pre_call_checks=["encrypted_content_affinity"])`` or
@@ -111,8 +109,8 @@ class EncryptedContentAffinityCheck(CustomLogger):
         return the ``model_id`` embedded in the first one found.
 
         Checks both:
-        1. Encoded item IDs (encitem_...) - for clients that send IDs
-        2. Wrapped encrypted_content (litellm_enc:...) - for clients like Codex that don't send IDs
+        1. Legacy encoded item IDs (encitem_...)
+        2. Wrapped encrypted_content (litellm_enc:...), with or without item IDs
 
         ``input`` can be:
         - a plain string  -> no encoded markers

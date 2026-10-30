@@ -809,7 +809,7 @@ def affinity_turn_one(gateway: Gateway, group: OrderedGroup) -> list[JsonValue]:
     reasoning: Final = next(
         (object_value(item) for item in output if object_value(item).get("type") == "reasoning"), None
     )
-    assert reasoning is not None and str(reasoning["id"]).startswith("encitem_"), answer.text
+    assert reasoning is not None and str(reasoning["encrypted_content"]).startswith("litellm_enc:"), answer.text
     message: Final = next((object_value(item) for item in output if object_value(item).get("type") == "message"), None)
     assert message is not None, answer.text
     return [reasoning, message]
@@ -1091,7 +1091,7 @@ def test_affinity_pin_keeps_the_targets_own_marked_reasoning_and_the_unmarked_hi
         marked: Final = next(
             (object_value(item) for item in output if object_value(item).get("type") == "reasoning"), None
         )
-        assert marked is not None and str(marked["id"]).startswith("encitem_"), first.text
+        assert marked is not None and str(marked["encrypted_content"]).startswith("litellm_enc:"), first.text
         mark: Final = marker()
         unmarked: Final = reasoning_item(ORDER_ONE_BLOB)
         answer: Final = responses_answer(

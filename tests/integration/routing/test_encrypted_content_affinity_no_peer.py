@@ -160,7 +160,7 @@ def _turn_one(gateway: Gateway, group: str, deployment_ids: tuple[str, ...]) -> 
     assert isinstance(output, list), f"turn one returned no output items: {response.text}"
     reasoning: Final = next((item for item in output if object_value(item).get("type") == "reasoning"), None)
     assert isinstance(reasoning, dict), f"turn one returned no reasoning item: {response.text}"
-    assert str(object_value(reasoning)["id"]).startswith("encitem_"), (
+    assert str(object_value(reasoning)["encrypted_content"]).startswith("litellm_enc:"), (
         f"affinity encoding did not run on turn one: {reasoning}"
     )
     assert isinstance(object_value(reasoning).get("encrypted_content"), str), (
