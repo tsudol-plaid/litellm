@@ -512,16 +512,13 @@ async def test_spend_logs_ui_group_by_session_paginates_sessions(monkeypatch):
     With group_by_session=true, /spend/logs/ui must page and count SESSIONS,
     not raw calls: the page is one representative row per session (DISTINCT
     ON the session group key, preferring non-MCP calls, newest first), the
-    bounded count counts groups, and on the default startTime sort the page is
+    total counts groups, and on the default startTime sort the page is
     selected by keyset (no OFFSET) so deep pages do not degrade. Otherwise the
     UI collapses a server page of N calls into fewer visible rows while the
     footer still claims N (issue #38060).
     """
     from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
-    from litellm.proxy.spend_tracking.spend_management_endpoints import (
-        SPEND_LOGS_PAGINATION_COUNT_CAP,
-        ui_view_spend_logs,
-    )
+    from litellm.proxy.spend_tracking.spend_management_endpoints import ui_view_spend_logs
 
     group_key = "COALESCE(NULLIF(session_id, ''), request_id), api_key"
     session_rows = [
@@ -534,11 +531,11 @@ async def test_spend_logs_ui_group_by_session_paginates_sessions(monkeypatch):
     ]
 
     async def mock_query_raw(sql_query, *params):
-        if "COUNT(*) AS total_count" in sql_query:
-            return [{"total_count": 60}]
+        if "rows_read" in sql_query:
+            return [{**row, "settled": True, "rows_read": 0, "session_count": 60} for row in session_rows]
         if "AS session_representatives" in sql_query:
             return representative_rows
-        return session_rows
+        return []
 
     mock_prisma = MagicMock()
     mock_prisma.db = MagicMock()
@@ -569,23 +566,16 @@ async def test_spend_logs_ui_group_by_session_paginates_sessions(monkeypatch):
 
     emitted = [call[0] for call in mock_prisma.db.query_raw.call_args_list]
     page_sql = emitted[0][0]
-    assert f"GROUP BY {group_key}" in page_sql, f"page must select sessions, not calls. SQL was:\n{page_sql}"
+    assert "GROUP BY session_key, api_key" in page_sql, f"page must select sessions, not calls. SQL was:\n{page_sql}"
     assert "OFFSET" not in page_sql, "the startTime page must be keyset-selected, not offset-selected"
     assert emitted[0][-1] == 51, "the page query fetches page_size + 1 sessions to detect has_more"
 
-    count_call = emitted[1]
-    count_sql = count_call[0]
-    assert f"GROUP BY {group_key}" in count_sql, f"grouped total must count sessions. SQL was:\n{count_sql}"
-    assert "COUNT(*) OVER ()" not in count_sql
-    assert "LIMIT" in count_sql and "FROM (" in count_sql, "the grouped count must stay bounded"
-    assert count_call[-1] == SPEND_LOGS_PAGINATION_COUNT_CAP + 1
-
-    rep_sql = emitted[2][0]
+    rep_sql = emitted[1][0]
     assert f"DISTINCT ON ({group_key})" in rep_sql, f"page must return one row per session. SQL was:\n{rep_sql}"
     assert (
         f"ORDER BY {group_key}, (call_type = 'asend_message') DESC, "
         "CASE WHEN call_type = 'asend_message' THEN \"endTime\" END DESC NULLS LAST, "
-        "call_type IN ('call_mcp_tool', 'list_mcp_tools'), \"startTime\" DESC"
+        "call_type IN ('call_mcp_tool', 'list_mcp_tools'), \"startTime\" DESC, request_id"
     ) in rep_sql, "the session representative must prefer the final agent outcome, then the newest non-MCP call"
     assert "COUNT(*) OVER ()" not in rep_sql
 
